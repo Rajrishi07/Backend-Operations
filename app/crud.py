@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
-from .models import Operation
+from .models import Operation, IdempotencyKey
 from datetime import datetime
+import hashlib
+import json
 
 def create_operation(db: Session, operation_type: str) -> Operation:
     op = Operation(
@@ -48,3 +50,41 @@ def update_operation_status(
     db.commit()
     db.refresh(op)
     return op
+
+def hash_request(payload: dict) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode()
+    ).hexdigest()
+
+def get_idempotent_response(
+    db: Session,
+    key: str,
+    operation_id: str,
+    request_hash: str
+):
+    record = db.query(IdempotencyKey).filter(
+        IdempotencyKey.key == key
+    ).first()
+
+    if not record:
+        return None
+    
+    if record.operation_id != operation_id or record.request_hash != request_hash:
+        raise ValueError("IDEMPOTENCY_KEY_REUSE")
+    return record.response
+
+def save_idempotent_response(
+    db: Session,
+    key: str,
+    operation_id: str,
+    request_hash: str,
+    response: dict
+):
+    record = IdempotencyKey(
+        key=key,
+        operation_id=operation_id,
+        request_hash=request_hash,
+        response=response
+    )
+    db.add(record)
+    db.commit()
