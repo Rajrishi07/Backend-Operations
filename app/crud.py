@@ -101,3 +101,6 @@ def get_cached_operation(redis_client, operation_id: str):
     if not value:
         return None
     return json.loads(value)
+
+def invalidate_operation_cache(redis_client, operation_id: str):
+    redis_client.delete(f"operation:{operation_id}")
