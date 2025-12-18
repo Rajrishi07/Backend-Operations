@@ -88,3 +88,19 @@ def save_idempotent_response(
     )
     db.add(record)
     db.commit()
+
+def cache_operation(redis_client, operation_id: str, data: dict, ttl: int = 30):
+    redis_client.setex(
+        f"operation:{operation_id}",
+        ttl,
+        json.dumps(data)
+    )
+
+def get_cached_operation(redis_client, operation_id: str):
+    value = redis_client.get(f"operation:{operation_id}")
+    if not value:
+        return None
+    return json.loads(value)
+
+def invalidate_operation_cache(redis_client, operation_id: str):
+    redis_client.delete(f"operation:{operation_id}")
