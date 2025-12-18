@@ -27,7 +27,12 @@ def update_operation_status(
     operation_id: UUID,
     new_status: str
 ) -> Operation:
-    op = db.query(Operation).filter(Operation.id == operation_id).first()
+
+    op = (db.query(Operation)
+    .filter(Operation.id == operation_id)
+    .with_for_update()
+    .first()
+    )
 
     if not op:
         raise ValueError("NOT_FOUND")
