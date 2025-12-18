@@ -1,6 +1,7 @@
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from .models import Operation, IdempotencyKey
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 
@@ -45,6 +46,8 @@ def update_operation_status(
         )
 
     op.status = new_status
+    if new_status == "RUNNING":
+        op.started_at = datetime.utcnow()
     op.updated_at = datetime.utcnow()
 
     db.commit()
@@ -90,10 +93,11 @@ def save_idempotent_response(
     db.commit()
 
 def cache_operation(redis_client, operation_id: str, data: dict, ttl: int = 30):
+    safe_data = jsonable_encoder(data)
     redis_client.setex(
         f"operation:{operation_id}",
         ttl,
-        json.dumps(data)
+        json.dumps(safe_data)
     )
 
 def get_cached_operation(redis_client, operation_id: str):
@@ -104,3 +108,31 @@ def get_cached_operation(redis_client, operation_id: str):
 
 def invalidate_operation_cache(redis_client, operation_id: str):
     redis_client.delete(f"operation:{operation_id}")
+
+def acquire_operation_lock(redis_client, operation_id: str, ttl: int = 10) -> bool:
+    return redis_client.set(
+        f"lock:operation:{operation_id}",
+        "1",
+        nx=True,
+        ex=ttl
+    )
+
+def release_operation_lock(redis_client, operation_id: str):
+    redis_client.delete(f"lock:operaion:{operation_id}")
+
+def find_stuck_operations(db: Session):
+    cutoff = datetime.utcnow() - timedelta(seconds=30)
+
+    return db.query(Operation).filter(
+        Operation.status == "RUNNING",
+        Operation.started_at < cutoff
+    ).all()
+
+def recover_stuck_operations(db: Session):
+    stuck_ops = find_stuck_operations(db)
+
+    for op in stuck_ops:
+        op.status = "FAILED"
+        op.updated_at = datetime.utcnow()
+
+    db.commit()

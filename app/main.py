@@ -1,15 +1,32 @@
-from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks
 from fastapi.encoders import jsonable_encoder
 
 from sqlalchemy.orm import Session
 from .db import SessionLocal, engine
 from . import models, schemas, crud
+from .redis_client import redis_client
+from .workers import execute_operation, recovery_worker
 from uuid import UUID
+import threading
+import time
 
 
 models.Base.metadata.create_all(bind=engine)
 
+def start_recovery_loop():
+    while True:
+        recovery_worker()
+        time.sleep(10)
+
 app = FastAPI()
+
+@app.on_event("startup")
+def start_background_recovery():
+    thread = threading.Thread(
+        target=start_recovery_loop,
+        daemon=True
+    )
+    thread.start()
 
 def get_db():
     db = SessionLocal()
@@ -35,20 +52,28 @@ def read_operation(
     operation_id: UUID,
     db: Session = Depends(get_db)
 ):
+    cached = crud.get_cached_operation(redis_client, str(operation_id))
+    if cached:
+        return cached
+
     op = crud.get_operation(db, operation_id)
     if not op:
         raise HTTPException(status_code=404, detail="Operation not found")
-    return op
+
+    response = schemas.OperationRead.from_orm(op).dict()
+    crud.cache_operation(redis_client, str(operation_id), response)
+
+    return response
 
 @app.patch("/operations/{operation_id}/status", response_model=schemas.OperationRead)
 def update_status(
     operation_id: UUID,
     payload: schemas.OperationStatusUpdate,
+    background_tasks: BackgroundTasks,
     idempotency_key: str = Header(..., alias="Idempotency-key"),
     db: Session = Depends(get_db)
 ):
     try:
-
         request_hash = crud.hash_request(payload.dict())
         existing = crud.get_idempotent_response(
             db,
@@ -60,22 +85,49 @@ def update_status(
         if existing:
             return existing
 
-        result = crud.update_operation_status(
-            db, 
-            operation_id, 
-            payload.status
+        lock_acquired = crud.acquire_operation_lock(
+            redis_client, 
+            str(operation_id)
         )
-
-        crud.save_idempotent_response(
-            db,
-            idempotency_key,
-            str(operation_id),
-            request_hash,
-            jsonable_encoder(
-                schemas.OperationRead.from_orm(result)
+        if not lock_acquired:
+            raise HTTPException(
+                status_code=409,
+                detail="Operation is being updated, try again"
             )
-        )
-        return result
+        try:
+            result = crud.update_operation_status(
+                db, 
+                operation_id, 
+                payload.status
+            )
+           
+            crud.invalidate_operation_cache(
+                redis_client,
+                 str(operation_id)
+            )
+            
+            if payload.status == "RUNNING":
+                background_tasks.add_task(
+                    execute_operation,
+                    operation_id
+                )
+                
+            crud.save_idempotent_response(
+                db,
+                idempotency_key,
+                str(operation_id),
+                request_hash,
+                jsonable_encoder(
+                    schemas.OperationRead.from_orm(result)
+                )
+            )
+            return result
+
+        finally:
+            crud.release_operation_lock(
+                redis_client,
+                str(operation_id)
+            )
     except ValueError as e:
         if str(e) == "NOT_FOUND":
             raise HTTPException(404, "Operation not found")
