@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Header
+from fastapi.encoders import jsonable_encoder
+
 from sqlalchemy.orm import Session
 from .db import SessionLocal, engine
 from . import models, schemas, crud
@@ -42,14 +44,38 @@ def read_operation(
 def update_status(
     operation_id: UUID,
     payload: schemas.OperationStatusUpdate,
+    idempotency_key: str = Header(..., alias="Idempotency-key"),
     db: Session = Depends(get_db)
 ):
     try:
-        return crud.update_operation_status(
+
+        request_hash = crud.hash_request(payload.dict())
+        existing = crud.get_idempotent_response(
+            db,
+            idempotency_key,
+            str(operation_id),
+            request_hash
+        )
+
+        if existing:
+            return existing
+
+        result = crud.update_operation_status(
             db, 
             operation_id, 
             payload.status
         )
+
+        crud.save_idempotent_response(
+            db,
+            idempotency_key,
+            str(operation_id),
+            request_hash,
+            jsonable_encoder(
+                schemas.OperationRead.from_orm(result)
+            )
+        )
+        return result
     except ValueError as e:
         if str(e) == "NOT_FOUND":
             raise HTTPException(404, "Operation not found")
