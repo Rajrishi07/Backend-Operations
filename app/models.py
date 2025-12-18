@@ -12,6 +12,7 @@ class Operation(Base):
     status = Column(String, nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    started_at = Column(DateTime, nullable=True)
 
 class IdempotencyKey(Base):
     __tablename__ = "idempotency_keys"

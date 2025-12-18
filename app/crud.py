@@ -1,7 +1,7 @@
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from .models import Operation, IdempotencyKey
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 
@@ -46,6 +46,8 @@ def update_operation_status(
         )
 
     op.status = new_status
+    if new_status == "RUNNING":
+        op.started_at = datetime.utcnow()
     op.updated_at = datetime.utcnow()
 
     db.commit()
@@ -117,3 +119,20 @@ def acquire_operation_lock(redis_client, operation_id: str, ttl: int = 10) -> bo
 
 def release_operation_lock(redis_client, operation_id: str):
     redis_client.delete(f"lock:operaion:{operation_id}")
+
+def find_stuck_operations(db: Session):
+    cutoff = datetime.utcnow() - timedelta(seconds=30)
+
+    return db.query(Operation).filter(
+        Operation.status == "RUNNING",
+        Operation.started_at < cutoff
+    ).all()
+
+def recover_stuck_operations(db: Session):
+    stuck_ops = find_stuck_operations(db)
+
+    for op in stuck_ops:
+        op.status = "FAILED"
+        op.updated_at = datetime.utcnow()
+
+    db.commit()

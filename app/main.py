@@ -5,13 +5,28 @@ from sqlalchemy.orm import Session
 from .db import SessionLocal, engine
 from . import models, schemas, crud
 from .redis_client import redis_client
-from .workers import execute_operation
+from .workers import execute_operation, recovery_worker
 from uuid import UUID
+import threading
+import time
 
 
 models.Base.metadata.create_all(bind=engine)
 
+def start_recovery_loop():
+    while True:
+        recovery_worker()
+        time.sleep(10)
+
 app = FastAPI()
+
+@app.on_event("startup")
+def start_background_recovery():
+    thread = threading.Thread(
+        target=start_recovery_loop,
+        daemon=True
+    )
+    thread.start()
 
 def get_db():
     db = SessionLocal()
