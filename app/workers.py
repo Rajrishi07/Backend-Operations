@@ -6,10 +6,12 @@ from .logger import logger
 from .metrics import operations_duration_seconds
 from .tracing import tracer
 from opentelemetry import trace
+from .shutdown import shutdown_event
 
 with operations_duration_seconds.time():
     def execute_operation(operation_id, trace_id):
-
+        if shutdown_event.is_set():
+            return
         with tracer.start_as_current_span(
             "execute_operation",
             context=trace.set_span_in_context(

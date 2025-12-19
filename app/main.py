@@ -8,6 +8,8 @@ from .redis_client import redis_client
 from .workers import execute_operation, recovery_worker
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from .tracing import tracer
+from .signal_handler import handle_shutdown
+from .shutdown import shutdown_event
 from uuid import UUID
 import threading
 import time
@@ -16,9 +18,9 @@ import time
 models.Base.metadata.create_all(bind=engine)
 
 def start_recovery_loop():
-    while True:
+    while not shutdown_event.is_set():
         recovery_worker()
-        time.sleep(10)
+        time.sleep(120)
 
 app = FastAPI()
 
@@ -76,6 +78,11 @@ def update_status(
     db: Session = Depends(get_db)
 ):
     try:
+        if shutdown_event.is_set():
+            raise HTTPException(
+                status_code=503,
+                detail="Server is shutting down"
+            )
         with tracer.start_as_current_span("update_operation_status") as span:
             span.set_attribute("operation_id", str(operation_id))
             span.set_attribute("operation.requested_status", payload.status)
