@@ -1,6 +1,13 @@
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from .models import Operation, IdempotencyKey
+from .logger import logger
+from .metrics import operations_created_total
+from .metrics import (
+    operations_running,
+    operations_succeeded_total,
+    operations_failed_total,
+)
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -12,6 +19,8 @@ def create_operation(db: Session, operation_type: str) -> Operation:
     )
     db.add(op)
     db.commit()
+
+    operations_created_total.inc()
     db.refresh(op)
     return op
 
@@ -44,11 +53,32 @@ def update_operation_status(
         raise ValueError(
             f"Invalid Transition {op.status} -> {new_status}"
         )
+    if op.status == "RUNNING" and new_status in {"SUCCESS", "FAILED"}:
+        operations_running.dec()
 
-    op.status = new_status
     if new_status == "RUNNING":
         op.started_at = datetime.utcnow()
+        operations_running.inc()
+    
+    if new_status == "SUCCESS":
+        operations_succeeded_total.inc()
+
+    if new_status == "FAILED":
+        operations_failed_total.inc()
+
+    
+    old_status = op.status
+    op.status = new_status
     op.updated_at = datetime.utcnow()
+
+    logger.info(
+        "Operation_status_changed",
+        extra={
+            "operation_id": str(operation_id),
+            "from": old_status,
+            "to": new_status
+        }
+    )
 
     db.commit()
     db.refresh(op)
@@ -134,5 +164,12 @@ def recover_stuck_operations(db: Session):
     for op in stuck_ops:
         op.status = "FAILED"
         op.updated_at = datetime.utcnow()
+        logger.warning(
+            "operation_recovered_as_failed",
+            extra={
+                "operation_id":str(op.id),
+                "started_at": op.started_at.isoformat()
+            }
+        )
 
     db.commit()
