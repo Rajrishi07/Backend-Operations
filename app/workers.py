@@ -2,22 +2,39 @@ import time
 from sqlalchemy.orm import Session
 from .db import SessionLocal
 from .crud import update_operation_status, recover_stuck_operations
+from .logger import logger
 
 def execute_operation(operation_id):
     db: Session = SessionLocal()
     try:
-        time.sleep(40)
-        return
+        logger.info(
+            "Operation_execution_started",
+            extra={
+                "operation_id": str(operation_id)
+            }
+        )
         update_operation_status(
             db,
             operation_id,
             "SUCCESS"
+        )
+        logger.info(
+            "Operation_execution_succeeded",
+            extra={
+                "operation_id": str(operation_id)
+            }
         )
     except Exception:
         update_operation_status(
             db,
             operation_id,
             "FAILED"
+        )
+        logger.error(
+            "Operation_execution_failed",
+            extra={
+                "operation_id": str(operation_id)
+            }
         )
     finally:
         db.close()
