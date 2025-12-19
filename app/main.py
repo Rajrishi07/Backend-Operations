@@ -7,6 +7,7 @@ from . import models, schemas, crud
 from .redis_client import redis_client
 from .workers import execute_operation, recovery_worker
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from .tracing import tracer
 from uuid import UUID
 import threading
 import time
@@ -75,60 +76,66 @@ def update_status(
     db: Session = Depends(get_db)
 ):
     try:
-        request_hash = crud.hash_request(payload.dict())
-        existing = crud.get_idempotent_response(
-            db,
-            idempotency_key,
-            str(operation_id),
-            request_hash
-        )
+        with tracer.start_as_current_span("update_operation_status") as span:
+            span.set_attribute("operation_id", str(operation_id))
+            span.set_attribute("operation.requested_status", payload.status)
+            trace_id = span.get_span_context().trace_id
 
-        if existing:
-            return existing
-
-        lock_acquired = crud.acquire_operation_lock(
-            redis_client, 
-            str(operation_id)
-        )
-        if not lock_acquired:
-            raise HTTPException(
-                status_code=409,
-                detail="Operation is being updated, try again"
-            )
-        try:
-            result = crud.update_operation_status(
-                db, 
-                operation_id, 
-                payload.status
-            )
-           
-            crud.invalidate_operation_cache(
-                redis_client,
-                 str(operation_id)
-            )
-            
-            if payload.status == "RUNNING":
-                background_tasks.add_task(
-                    execute_operation,
-                    operation_id
-                )
-                
-            crud.save_idempotent_response(
+            request_hash = crud.hash_request(payload.dict())
+            existing = crud.get_idempotent_response(
                 db,
                 idempotency_key,
                 str(operation_id),
-                request_hash,
-                jsonable_encoder(
-                    schemas.OperationRead.from_orm(result)
-                )
+                request_hash
             )
-            return result
 
-        finally:
-            crud.release_operation_lock(
-                redis_client,
+            if existing:
+                return existing
+
+            lock_acquired = crud.acquire_operation_lock(
+                redis_client, 
                 str(operation_id)
             )
+            if not lock_acquired:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Operation is being updated, try again"
+                )
+            try:
+                result = crud.update_operation_status(
+                    db, 
+                    operation_id, 
+                    payload.status
+                )
+            
+                crud.invalidate_operation_cache(
+                    redis_client,
+                    str(operation_id)
+                )
+                
+                if payload.status == "RUNNING":
+                    background_tasks.add_task(
+                        execute_operation,
+                        operation_id,
+                        trace_id
+                    )
+                    
+                crud.save_idempotent_response(
+                    db,
+                    idempotency_key,
+                    str(operation_id),
+                    request_hash,
+                    jsonable_encoder(
+                        schemas.OperationRead.from_orm(result)
+                    )
+                )
+                return result
+
+            finally:
+                crud.release_operation_lock(
+                    redis_client,
+                    str(operation_id)
+                )
     except ValueError as e:
         if str(e) == "NOT_FOUND":
             raise HTTPException(404, "Operation not found")

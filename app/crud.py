@@ -19,7 +19,7 @@ def create_operation(db: Session, operation_type: str) -> Operation:
     )
     db.add(op)
     db.commit()
-    print("Created Operation, Increasing Total")
+
     operations_created_total.inc()
     db.refresh(op)
     return op
