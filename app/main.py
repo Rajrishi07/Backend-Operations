@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, Header, BackgroundTasks, Response
 from fastapi.encoders import jsonable_encoder
 
 from sqlalchemy.orm import Session
@@ -6,6 +6,7 @@ from .db import SessionLocal, engine
 from . import models, schemas, crud
 from .redis_client import redis_client
 from .workers import execute_operation, recovery_worker
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from uuid import UUID
 import threading
 import time
@@ -132,3 +133,10 @@ def update_status(
         if str(e) == "NOT_FOUND":
             raise HTTPException(404, "Operation not found")
         raise HTTPException(400, str(e))
+
+@app.get("/metrics")
+def metrics():
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
